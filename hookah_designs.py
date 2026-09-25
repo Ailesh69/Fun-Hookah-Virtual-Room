@@ -1,13 +1,17 @@
-"""Realistic-looking hookah sprites drawn with OpenCV primitives.
+"""Stationary hookah sprites drawn with OpenCV primitives.
 
-Each design returns (BGRA sprite, (smoke_origin_x, smoke_origin_y)).
-The smoke origin is the top of the coals, where smoke visibly rises from.
+Each design returns (BGRA sprite, (port_x, port_y)). The port point is the
+tip of the hose nozzle on the side of the stem - the simulator draws a
+dynamic hose from there to wherever the user's hand is.
 
-Rendering approach: layered primitives with per-pixel shading -
-glass base with radial gradient, liquid line, top-left specular; metal
-stem with cylindrical shading and a narrow specular streak; clay bowl
-with side shadow; multi-layer bloom for glowing embers; sagging hose
-with dark underlayer plus offset highlight; small metal mouthpiece.
+Rendering: layered primitives with per-pixel shading -
+- Glass base with radial gradient body, tinted liquid, meniscus line,
+  top-left specular highlight, contact shadow, dark rim
+- Metallic stem/collar with cylindrical shading and narrow specular streak
+- Multiple ornament rings for silhouette variety
+- Tapered clay bowl with foil (poked holes) on top
+- Three glowing embers with dark base, warm bloom, hot core, ash flecks
+- Side hose port (nozzle nub)
 """
 
 from __future__ import annotations
@@ -27,7 +31,6 @@ def _blank(w: int, h: int) -> np.ndarray:
 
 
 def _paint(img: np.ndarray, mask: np.ndarray, color_bgr) -> None:
-    """Blend a solid BGR color into img (BGRA) using a float (H,W) alpha mask."""
     a = mask[..., None].astype(np.float32)
     color = np.asarray(color_bgr, np.float32)
     img[..., :3] = (img[..., :3].astype(np.float32) * (1 - a) + color * a).astype(np.uint8)
@@ -36,7 +39,6 @@ def _paint(img: np.ndarray, mask: np.ndarray, color_bgr) -> None:
 
 
 def _paint_rgb(img: np.ndarray, mask: np.ndarray, color_layer: np.ndarray) -> None:
-    """Blend a per-pixel color layer (H,W,3) into img using a float mask."""
     a = mask[..., None].astype(np.float32)
     img[..., :3] = (img[..., :3].astype(np.float32) * (1 - a) + color_layer * a).astype(np.uint8)
     cur_a = img[..., 3:4].astype(np.float32) / 255.0
@@ -50,7 +52,6 @@ def _ellipse_mask(shape, cx, cy, rx, ry) -> np.ndarray:
 
 
 def _radial_shade(shape, cx, cy, rx, ry) -> np.ndarray:
-    """1 at center, 0 at ellipse edge (linear falloff)."""
     h, w = shape
     yy, xx = np.mgrid[:h, :w].astype(np.float32)
     d = np.sqrt(((xx - cx) / max(rx, 1)) ** 2 + ((yy - cy) / max(ry, 1)) ** 2)
@@ -61,8 +62,7 @@ def _radial_shade(shape, cx, cy, rx, ry) -> np.ndarray:
 # Parts
 # ---------------------------------------------------------------------------
 
-def draw_glass_bulb(img: np.ndarray, cx: int, cy: int, rx: int, ry: int,
-                    tint: Tuple[int, int, int]) -> None:
+def draw_glass_bulb(img, cx, cy, rx, ry, tint):
     shape = img.shape[:2]
     h, w = shape
     mask = _ellipse_mask(shape, cx, cy, rx, ry).astype(np.float32)
@@ -70,15 +70,14 @@ def draw_glass_bulb(img: np.ndarray, cx: int, cy: int, rx: int, ry: int,
         return
 
     tint_np = np.asarray(tint, np.float32)
-    bright = np.clip(tint_np * 1.35, 0, 255)
+    bright = np.clip(tint_np * 1.4, 0, 255)
     dark = tint_np * 0.15
 
-    # Body: radial gradient sphere
     shade = _radial_shade(shape, cx, cy, rx, ry)
     body = dark + (bright - dark) * shade[..., None]
     _paint_rgb(img, mask * 0.95, np.clip(body, 0, 255))
 
-    # Liquid: soft vertical gradient darkening toward the bottom
+    # Liquid gradient in the bottom half
     yy = np.mgrid[:h, :w][0].astype(np.float32)
     liquid_top = cy - int(ry * 0.05)
     liq_grad = np.clip((yy - liquid_top) / max(1, (cy + ry - liquid_top)), 0, 1)
@@ -97,15 +96,15 @@ def draw_glass_bulb(img: np.ndarray, cx: int, cy: int, rx: int, ry: int,
                 (int(tint_np[0] * 0.18), int(tint_np[1] * 0.18),
                  int(tint_np[2] * 0.18), 255), 2, cv2.LINE_AA)
 
-    # Specular highlight top-left
+    # Top-left specular crescent
     spec = np.zeros(shape, np.float32)
     cv2.ellipse(spec, (cx - int(rx * 0.45), cy - int(ry * 0.45)),
                 (max(2, int(rx * 0.28)), max(2, int(ry * 0.12))),
                 -25, 0, 360, 1.0, -1, cv2.LINE_AA)
-    spec = cv2.GaussianBlur(spec, (0, 0), 3) * mask * 0.9
+    spec = cv2.GaussianBlur(spec, (0, 0), 3) * mask * 0.95
     _paint(img, spec, (255, 255, 255))
 
-    # Small bottom-right rim reflection
+    # Bottom-right rim highlight
     spec2 = np.zeros(shape, np.float32)
     cv2.ellipse(spec2, (cx + int(rx * 0.55), cy + int(ry * 0.4)),
                 (max(2, int(rx * 0.12)), max(2, int(ry * 0.04))),
@@ -122,9 +121,7 @@ def draw_glass_bulb(img: np.ndarray, cx: int, cy: int, rx: int, ry: int,
     _paint(img, shad, (0, 0, 0))
 
 
-def draw_metal_column(img: np.ndarray, cx: int, y_top: int, y_bot: int,
-                      half_w: int, base_bgr, hl_bgr) -> None:
-    """Vertical metallic cylinder with cylindrical shading + specular streak."""
+def draw_metal_column(img, cx, y_top, y_bot, half_w, base_bgr, hl_bgr):
     h, w = img.shape[:2]
     y1 = max(0, y_top)
     y2 = min(h, y_bot)
@@ -151,9 +148,7 @@ def draw_metal_column(img: np.ndarray, cx: int, y_top: int, y_bot: int,
     img[y1:y2, x1:x2, 3] = 255
 
 
-def draw_disc(img: np.ndarray, cx: int, cy: int, rx: int, ry: int,
-              base_bgr, hl_bgr) -> None:
-    """Flat elliptical disc (charcoal plate) with top-lit gradient."""
+def draw_disc(img, cx, cy, rx, ry, base_bgr, hl_bgr):
     shape = img.shape[:2]
     mask = _ellipse_mask(shape, cx, cy, rx, ry).astype(np.float32)
     if mask.sum() == 0:
@@ -169,9 +164,7 @@ def draw_disc(img: np.ndarray, cx: int, cy: int, rx: int, ry: int,
                  int(base_bgr[2] * 0.35), 255), 1, cv2.LINE_AA)
 
 
-def draw_bowl(img: np.ndarray, cx: int, cy: int, half_w: int, half_h: int,
-              base_bgr, hl_bgr) -> None:
-    """Tapered clay bowl with rim and side shadow."""
+def draw_bowl(img, cx, cy, half_w, half_h, base_bgr, hl_bgr):
     top_y = cy - half_h
     bot_y = cy + half_h
     top_hw = half_w
@@ -185,7 +178,6 @@ def draw_bowl(img: np.ndarray, cx: int, cy: int, half_w: int, half_h: int,
     ], np.int32)
     cv2.fillPoly(img, [body], (*base_bgr, 255), cv2.LINE_AA)
 
-    # Side shadow (right half)
     shadow_poly = np.array([
         [cx, top_y],
         [cx + top_hw, top_y],
@@ -198,7 +190,7 @@ def draw_bowl(img: np.ndarray, cx: int, cy: int, half_w: int, half_h: int,
                   int(base_bgr[2] * 0.55), 255), cv2.LINE_AA)
     cv2.addWeighted(overlay, 0.5, img, 0.5, 0, dst=img)
 
-    # Top opening (rim) - lit inside then dark rim line
+    # Open top rim
     cv2.ellipse(img, (cx, top_y), (top_hw, max(2, int(half_h * 0.22))),
                 0, 0, 360, (*hl_bgr, 255), -1, cv2.LINE_AA)
     cv2.ellipse(img, (cx, top_y), (top_hw, max(2, int(half_h * 0.22))),
@@ -212,8 +204,25 @@ def draw_bowl(img: np.ndarray, cx: int, cy: int, half_w: int, half_h: int,
                  int(base_bgr[2] * 0.5), 255), -1, cv2.LINE_AA)
 
 
-def draw_coals(img: np.ndarray, cx: int, cy: int, spread_x: int, size: int) -> None:
-    """Three glowing coals: dark base, warm bloom, bright core, ash flecks."""
+def draw_foil(img, cx, cy, rx, ry):
+    """Aluminum foil disc on top of the bowl with visible poked holes."""
+    cv2.ellipse(img, (cx, cy), (rx, ry), 0, 0, 360, (205, 205, 215, 255), -1, cv2.LINE_AA)
+    # Slight top-lit gradient
+    hi = np.zeros(img.shape[:2], np.float32)
+    cv2.ellipse(hi, (cx, cy - max(1, ry // 3)), (int(rx * 0.75), max(1, ry // 2)),
+                0, 0, 360, 1.0, -1, cv2.LINE_AA)
+    hi = cv2.GaussianBlur(hi, (0, 0), 2) * 0.4
+    _paint(img, hi, (245, 245, 250))
+    # Poked holes
+    rng = np.random.default_rng(11)
+    for _ in range(14):
+        hx = cx + int(rng.integers(-rx + 3, rx - 3))
+        hy = cy + (int(rng.integers(-ry + 1, max(-ry + 2, ry - 1))) if ry > 2 else 0)
+        cv2.circle(img, (hx, hy), 1, (25, 25, 30, 255), -1)
+    cv2.ellipse(img, (cx, cy), (rx, ry), 0, 0, 360, (100, 100, 110, 255), 1, cv2.LINE_AA)
+
+
+def draw_coals(img, cx, cy, spread_x, size):
     shape = img.shape[:2]
     coals = [(cx - spread_x, cy), (cx, cy - 1), (cx + spread_x, cy)]
 
@@ -222,13 +231,14 @@ def draw_coals(img: np.ndarray, cx: int, cy: int, spread_x: int, size: int) -> N
 
     glow = np.zeros(shape, np.float32)
     for (x, y) in coals:
-        cv2.circle(glow, (x, y), size + 3, 1.0, -1, cv2.LINE_AA)
-    glow = cv2.GaussianBlur(glow, (0, 0), 6)
-    glow = np.clip(glow, 0, 1) * 0.85
+        cv2.circle(glow, (x, y), size + 4, 1.0, -1, cv2.LINE_AA)
+    glow = cv2.GaussianBlur(glow, (0, 0), 7)
+    glow = np.clip(glow, 0, 1) * 0.9
     _paint(img, glow, (40, 120, 255))
 
     for (x, y) in coals:
-        cv2.circle(img, (x, y), max(1, size // 3), (120, 200, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(img, (x, y), max(1, size // 3), (140, 210, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(img, (x, y), max(1, size // 5), (200, 240, 255, 255), -1, cv2.LINE_AA)
 
     rng = np.random.default_rng(3)
     for (x, y) in coals:
@@ -238,183 +248,116 @@ def draw_coals(img: np.ndarray, cx: int, cy: int, spread_x: int, size: int) -> N
             cv2.circle(img, (x + ox, y + oy), 1, (220, 220, 240, 255), -1, cv2.LINE_AA)
 
 
-def draw_hose(img: np.ndarray, pts, base_bgr, hl_bgr, thickness: int = 12) -> None:
-    """Draping hose: shadow underlayer + main body + offset highlight."""
-    for i in range(len(pts) - 1):
-        cv2.line(img, pts[i], pts[i + 1], (0, 0, 0, 255), thickness + 4, cv2.LINE_AA)
-    for i in range(len(pts) - 1):
-        cv2.line(img, pts[i], pts[i + 1], (*base_bgr, 255), thickness, cv2.LINE_AA)
-    off = max(1, thickness // 4)
-    for i in range(len(pts) - 1):
-        p1 = (pts[i][0], pts[i][1] - off)
-        p2 = (pts[i + 1][0], pts[i + 1][1] - off)
-        cv2.line(img, p1, p2, (*hl_bgr, 255), max(1, thickness // 3), cv2.LINE_AA)
-
-
-def draw_mouthpiece(img: np.ndarray, x: int, y: int, base_bgr, hl_bgr) -> None:
-    cv2.circle(img, (x, y), 11, (*base_bgr, 255), -1, cv2.LINE_AA)
-    cv2.circle(img, (x, y), 11,
-               (int(base_bgr[0] * 0.3), int(base_bgr[1] * 0.3),
-                int(base_bgr[2] * 0.3), 255), 1, cv2.LINE_AA)
-    cv2.circle(img, (x - 3, y - 3), 3, (*hl_bgr, 255), -1, cv2.LINE_AA)
-    cv2.circle(img, (x, y), 4, (15, 15, 15, 255), -1, cv2.LINE_AA)
+def draw_port(img, x, y, base_bgr, hl_bgr):
+    """Small horizontal nozzle sticking out from the side of the stem."""
+    cv2.ellipse(img, (x, y), (11, 7), 0, 0, 360, (*base_bgr, 255), -1, cv2.LINE_AA)
+    cv2.ellipse(img, (x, y), (11, 7), 0, 0, 360,
+                (int(base_bgr[0] * 0.3), int(base_bgr[1] * 0.3),
+                 int(base_bgr[2] * 0.3), 255), 1, cv2.LINE_AA)
+    cv2.circle(img, (x + 4, y - 2), 3, (*hl_bgr, 255), -1, cv2.LINE_AA)
+    cv2.circle(img, (x + 8, y), 2, (15, 15, 15, 255), -1, cv2.LINE_AA)
 
 
 # ---------------------------------------------------------------------------
-# Full assembly
+# Full assembly (no hose - hose is drawn dynamically by the simulator)
 # ---------------------------------------------------------------------------
 
-def build_hookah(w: int, h: int,
-                 glass_tint, metal_base, metal_hl,
-                 hose_color, hose_hl) -> Tuple[np.ndarray, Tuple[int, int]]:
+def build_hookah(w, h, glass_tint, metal_base, metal_hl) -> Tuple[np.ndarray, Tuple[int, int]]:
     img = _blank(w, h)
     cx = w // 2
 
-    coal_y = int(h * 0.06)
-    bowl_top = int(h * 0.085)
-    bowl_bot = int(h * 0.185)
-    plate_y = int(h * 0.205)
-    col_top = int(h * 0.215)
-    collar_top = int(h * 0.49)
-    collar_bot = int(h * 0.55)
-    base_cy = int(h * 0.73)
-    base_ry = int(h * 0.21)
-    base_rx = int(w * 0.42)
+    coal_cy = int(h * 0.06)
+    bowl_top = int(h * 0.09)
+    bowl_bot = int(h * 0.18)
+    plate_y = int(h * 0.20)
+    stem_top = int(h * 0.21)
+    collar_top = int(h * 0.54)
+    collar_bot = int(h * 0.61)
+    base_cy = int(h * 0.79)
+    base_ry = int(h * 0.19)
+    base_rx = int(w * 0.44)
+
+    port_x = cx + int(w * 0.08)
+    port_y = int(h * 0.50)
 
     # Ground shadow
     shad = np.zeros((h, w), np.float32)
-    cv2.ellipse(shad, (cx, base_cy + base_ry + 8),
-                (int(base_rx * 0.9), 8), 0, 0, 360, 1.0, -1, cv2.LINE_AA)
-    shad = cv2.GaussianBlur(shad, (0, 0), 5) * 0.55
+    cv2.ellipse(shad, (cx, base_cy + base_ry + 10),
+                (int(base_rx * 0.9), 9), 0, 0, 360, 1.0, -1, cv2.LINE_AA)
+    shad = cv2.GaussianBlur(shad, (0, 0), 6) * 0.6
     _paint(img, shad, (0, 0, 0))
 
     # Glass base
     draw_glass_bulb(img, cx, base_cy, base_rx, base_ry, glass_tint)
 
-    # Collar joining base to stem
+    # Collar between base and stem
     draw_metal_column(img, cx, collar_top, collar_bot,
-                      int(w * 0.09), metal_base, metal_hl)
-    cv2.line(img, (cx - int(w * 0.09), collar_bot - 2),
-             (cx + int(w * 0.09), collar_bot - 2),
+                      int(w * 0.095), metal_base, metal_hl)
+    cv2.line(img, (cx - int(w * 0.095), collar_bot - 2),
+             (cx + int(w * 0.095), collar_bot - 2),
              (int(metal_base[0] * 0.35), int(metal_base[1] * 0.35),
               int(metal_base[2] * 0.35), 255), 2, cv2.LINE_AA)
 
     # Main stem
-    draw_metal_column(img, cx, col_top, collar_top,
-                      int(w * 0.05), metal_base, metal_hl)
+    draw_metal_column(img, cx, stem_top, collar_top,
+                      int(w * 0.055), metal_base, metal_hl)
 
-    # Ornament rings on stem
-    for frac in (0.26, 0.35, 0.44):
-        ry = int(h * (0.215 + frac * 0.28))
-        draw_metal_column(img, cx, ry, ry + 6,
-                          int(w * 0.075), metal_base, metal_hl)
+    # Ornament rings
+    for frac in (0.22, 0.32, 0.42, 0.52):
+        ry = int(h * (0.21 + frac * 0.33))
+        draw_metal_column(img, cx, ry, ry + 7,
+                          int(w * 0.08), metal_base, metal_hl)
 
     # Charcoal plate
-    draw_disc(img, cx, plate_y, int(w * 0.17),
+    draw_disc(img, cx, plate_y, int(w * 0.20),
               max(3, int(h * 0.018)), metal_base, metal_hl)
 
     # Clay bowl
     draw_bowl(img, cx, (bowl_top + bowl_bot) // 2,
-              int(w * 0.085), (bowl_bot - bowl_top) // 2,
+              int(w * 0.09), (bowl_bot - bowl_top) // 2,
               (58, 68, 88), (110, 130, 160))
 
-    # Foil on top of bowl (a subtle grey disc under coals)
-    cv2.ellipse(img, (cx, bowl_top + 2),
-                (int(w * 0.085), max(2, int(h * 0.012))),
-                0, 0, 360, (180, 180, 190, 255), -1, cv2.LINE_AA)
+    # Foil disc
+    draw_foil(img, cx, bowl_top + 2, int(w * 0.09), max(2, int(h * 0.012)))
 
     # Coals
-    draw_coals(img, cx, coal_y + 4, int(w * 0.045),
-               max(4, int(w * 0.022)))
+    draw_coals(img, cx, coal_cy + 4, int(w * 0.05),
+               max(5, int(w * 0.024)))
 
     # Hose port
-    port_y = int(h * 0.47)
-    port_x = cx + int(w * 0.06)
-    cv2.circle(img, (port_x, port_y), 7, (*metal_base, 255), -1, cv2.LINE_AA)
-    cv2.circle(img, (port_x, port_y), 7,
-               (int(metal_base[0] * 0.3), int(metal_base[1] * 0.3),
-                int(metal_base[2] * 0.3), 255), 1, cv2.LINE_AA)
-    cv2.circle(img, (port_x - 2, port_y - 2), 2, (*metal_hl, 255), -1, cv2.LINE_AA)
+    draw_port(img, port_x, port_y, metal_base, metal_hl)
 
-    # Draping hose
-    end_x = min(w - 18, port_x + int(w * 0.34))
-    end_y = min(h - 20, port_y + int(h * 0.30))
-    pts = []
-    start = (port_x + 7, port_y)
-    for t in np.linspace(0, 1, 32):
-        sag = np.sin(t * np.pi) * (h * 0.05)
-        x = int(start[0] * (1 - t) + end_x * t)
-        y = int(start[1] * (1 - t) + end_y * t + sag)
-        pts.append((x, y))
-    draw_hose(img, pts, hose_color, hose_hl, thickness=max(8, int(w * 0.045)))
-    draw_mouthpiece(img, pts[-1][0], pts[-1][1], metal_base, metal_hl)
-
-    return img, (cx, coal_y - 3)
+    return img, (port_x + int(w * 0.025), port_y)
 
 
 # ---------------------------------------------------------------------------
-# Designs (color palettes) - BGR
+# Color palettes (BGR)
 # ---------------------------------------------------------------------------
 
-def classic_amber(w, h):
-    return build_hookah(
-        w, h,
-        glass_tint=(20, 110, 200),      # amber whiskey
-        metal_base=(35, 85, 145),       # antique brass
-        metal_hl=(120, 210, 255),       # bright gold
-        hose_color=(25, 25, 30),        # dark leather
-        hose_hl=(90, 90, 100),
-    )
-
-
-def sapphire(w, h):
-    return build_hookah(
-        w, h,
-        glass_tint=(190, 100, 30),      # deep sapphire blue
-        metal_base=(150, 150, 160),     # chrome
-        metal_hl=(240, 240, 250),
-        hose_color=(60, 35, 20),
-        hose_hl=(170, 120, 60),
-    )
-
-
-def royal_ruby(w, h):
-    return build_hookah(
-        w, h,
-        glass_tint=(45, 30, 190),       # ruby
-        metal_base=(30, 90, 155),       # rose gold
-        metal_hl=(90, 200, 255),
-        hose_color=(20, 20, 40),
-        hose_hl=(90, 65, 100),
-    )
-
-
-def emerald(w, h):
-    return build_hookah(
-        w, h,
-        glass_tint=(80, 165, 55),       # emerald green
-        metal_base=(140, 140, 145),     # silver
-        metal_hl=(235, 235, 240),
-        hose_color=(35, 55, 30),
-        hose_hl=(120, 165, 90),
-    )
-
-
-def midnight(w, h):
-    return build_hookah(
-        w, h,
-        glass_tint=(45, 40, 55),        # smoked glass with purple hint
-        metal_base=(55, 55, 62),        # gunmetal
-        metal_hl=(155, 155, 165),
-        hose_color=(15, 15, 22),
-        hose_hl=(75, 75, 88),
-    )
-
-
-DESIGNS = [
-    ("Classic Amber", classic_amber),
-    ("Sapphire", sapphire),
-    ("Royal Ruby", royal_ruby),
-    ("Emerald", emerald),
-    ("Midnight", midnight),
+PALETTES = [
+    # (name, glass_tint, metal_base, metal_hl, hose_base, hose_hl)
+    ("Classic Amber",
+     (20, 110, 200),   (35, 85, 145),  (120, 210, 255),
+     (25, 25, 30),     (90, 90, 100)),
+    ("Sapphire",
+     (190, 100, 30),   (150, 150, 160), (240, 240, 250),
+     (60, 35, 20),     (170, 120, 60)),
+    ("Royal Ruby",
+     (45, 30, 190),    (30, 90, 155),   (90, 200, 255),
+     (20, 20, 40),     (90, 65, 100)),
+    ("Emerald",
+     (80, 165, 55),    (140, 140, 145), (235, 235, 240),
+     (35, 55, 30),     (120, 165, 90)),
+    ("Midnight",
+     (45, 40, 55),     (55, 55, 62),    (155, 155, 165),
+     (15, 15, 22),     (75, 75, 88)),
 ]
+
+
+def _factory(pal):
+    def make(w, h):
+        return build_hookah(w, h, pal[1], pal[2], pal[3])
+    return make
+
+
+DESIGNS = [(p[0], _factory(p)) for p in PALETTES]

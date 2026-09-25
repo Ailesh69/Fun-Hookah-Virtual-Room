@@ -1,66 +1,76 @@
 # Fun Hookah Virtual Room
 
-A playful OpenCV webcam app that puts a fancy virtual hookah next to your face,
-lets you pick from several designs, blows animated smoke out of the mouthpiece,
-and lets you pass the hookah around when more than one friend is on camera.
+An OpenCV webcam app that puts a virtual hookah on your desk. The hose
+follows your hand around the frame - lift the mouthpiece to your mouth and
+smoke starts pouring out. Move it away and the smoke stops.
 
-Everything is drawn programmatically with OpenCV — no image assets required.
+Nothing leaves your machine. No image assets - everything is drawn with
+OpenCV primitives.
 
-## Features
+## What it does
 
-- Real-time face detection with Haar cascades (multi-face supported).
-- 5 built-in hookah designs: Classic Gold, Neon Dream, Royal Ruby, Emerald
-  Mist, Cosmic Purple.
-- Particle-based smoke that rises, drifts and dissipates.
-- "Pass the hookah" mechanic — the active hookah follows the current holder;
-  press `P` to hand it to the next detected face, or `A` for auto-rotate.
-- Big puff on `SPACE`, screenshot on `S`.
-- Selfie-mirrored view with an overlay HUD.
+- Real-time face detection (Haar cascade).
+- Skin-color hand tracking (HSV + YCrCb, face region excluded).
+- A stationary hookah at the bottom of the frame - glass base with tinted
+  liquid, cylindrical-shaded metal stem, clay bowl with foil, glowing
+  embers.
+- A dynamic hose (quadratic bezier) that curves from the hookah's side port
+  to your tracked hand, with a metal mouthpiece at the end.
+- Smoke gate: proximity between the mouthpiece and your estimated mouth
+  drives emission. No proximity, no smoke.
+- Five color palettes to choose from.
 
 ## Setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate     # Windows: .venv\Scripts\activate
+python -m venv venv
+venv\Scripts\activate         # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
+python hookah_simulator.py
 ```
 
-Requires Python 3.9+ and a working webcam.
-
-## Run
+Requires Python 3.9+ and a working webcam. If pip somehow installs the
+broken `opencv-python 5.0.0.93` pre-release, force a stable build:
 
 ```bash
-python hookah_simulator.py
+pip install --force-reinstall "opencv-python==4.10.0.84"
 ```
 
 ## Controls
 
-| Key | Action |
-| --- | --- |
-| `1`–`5` | Switch hookah design |
-| `SPACE` | Big smoke puff |
-| `P` | Pass the hookah to the next face |
-| `A` | Toggle auto-pass (rotates every few seconds) |
-| `S` | Save a screenshot into `./screenshots/` |
-| `F` | Toggle FPS overlay |
-| `H` | Toggle on-screen help |
-| `Q` / `Esc` | Quit |
+| Key       | Action                                       |
+| --------- | -------------------------------------------- |
+| `1`..`5`  | Switch hookah design                         |
+| `M`       | Mirror hookah to the other side of the frame |
+| `D`       | Toggle hand/mouth debug markers              |
+| `F`       | Toggle FPS overlay                           |
+| `H`       | Toggle on-screen help                        |
+| `S`       | Save a screenshot to `./screenshots/`        |
+| `Q`/`Esc` | Quit                                         |
 
-## How it works
+## How the smoke gate works
 
-- `hookah_designs.py` builds each hookah as a BGRA sprite using OpenCV
-  primitives (ellipses, gradients, glowing coals, a curly hose). It also
-  reports the mouthpiece tip so smoke can originate from the right spot.
-- `hookah_simulator.py` grabs frames from the webcam, runs face detection,
-  scales and alpha-blends the current design next to the "holder" face, and
-  emits smoke particles that rise, swirl and fade.
-- The smoke system draws all particles into an accumulation mask, blurs it,
-  and blends the tinted overlay into the frame — cheap, but it looks smoky.
+Each frame the app:
 
-## Notes
+1. Detects the largest face and estimates the mouth at roughly 78% down
+   from the top of the face box.
+2. Detects a skin-colored blob outside the face - the biggest one within
+   reason wins, weighted toward its last known position for stability.
+3. Measures the distance from the tracked hand (mouthpiece) to the mouth.
+4. If that distance is less than about 65% of the face width, the app
+   emits smoke particles centered on the mouth. Otherwise nothing puffs.
 
-- Face detection uses the OpenCV-bundled Haar cascade
-  (`haarcascade_frontalface_default.xml`), which ships with `opencv-python`.
-- If no webcam is detected on index 0, the app tries indices 1–3 before
-  giving up.
-- Nothing leaves your machine — this is purely local video processing.
+The smoke system itself uses larger, longer-lived, more opaque particles
+than a typical fog effect - so puffs read clearly against a normal indoor
+background.
+
+## Tips for good tracking
+
+- Sit under decent, even lighting. Skin-color detection struggles with
+  colored bulbs or heavy shadows.
+- Keep your hand fully in the frame and away from the face when you're
+  not smoking - the hookah hose will follow it around.
+- Wear sleeves. A big bare arm can win against a small hand for the
+  "biggest skin blob" score.
+- Press `D` if you want to see where the app thinks your hand and mouth
+  are - useful for tuning distance / lighting.
