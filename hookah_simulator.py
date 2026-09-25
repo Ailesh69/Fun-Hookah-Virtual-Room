@@ -236,7 +236,7 @@ def open_camera(index: int = 0) -> cv2.VideoCapture:
 def build_sprite_cache() -> List[Tuple[str, np.ndarray, Tuple[int, int]]]:
     """Pre-render every design at a reference size; we'll scale per-face."""
     cache = []
-    ref_w, ref_h = 240, 360
+    ref_w, ref_h = 320, 520
     for name, factory in DESIGNS:
         sprite, tip = factory(ref_w, ref_h)
         cache.append((name, sprite, tip))
