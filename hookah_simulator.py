@@ -138,7 +138,15 @@ def scale_sprite(sprite: np.ndarray, new_w: int, new_h: int) -> np.ndarray:
                       interpolation=cv2.INTER_AREA)
 
 
-def load_face_cascade() -> cv2.CascadeClassifier:
+def load_face_cascade():
+    if not hasattr(cv2, "CascadeClassifier"):
+        raise RuntimeError(
+            "Your installed OpenCV build is missing CascadeClassifier "
+            f"(cv2 {getattr(cv2, '__version__', '?')}). This usually means pip "
+            "installed a broken opencv-python 5.0.0 pre-release. Reinstall a "
+            "stable 4.x build:\n\n"
+            "    pip install --force-reinstall \"opencv-python==4.10.0.84\"\n"
+        )
     path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
     cascade = cv2.CascadeClassifier(path)
     if cascade.empty():
